@@ -6,3 +6,4 @@
 
 
 import polars as pl
+# hay que avanzar con el modelo de NLP
