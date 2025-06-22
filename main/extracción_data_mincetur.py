@@ -1,3 +1,4 @@
+from webdriver_manager.chrome import ChromeDriverManager
 # Importa el controlador principal de Selenium para controlar el navegador (Chrome, Firefox, etc.)
 from selenium import webdriver
 
@@ -22,11 +23,7 @@ import time
 import pandas as pd
 
 
-url_driver = "C:/Users/auditoria1/Downloads/chromedriver-win64/chromedriver.exe"
-
-servicio = Service(url_driver)
-
-yo = webdriver.Chrome(service=servicio)
+yo = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
 
 url_web = "https://consultasenlinea.mincetur.gob.pe/webCasinos/Index.aspx?po=frmSalas.aspx"
 
