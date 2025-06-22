@@ -1,7 +1,7 @@
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 
-CONNECTION_STRING = "mongodb+srv://usuario:password@cluster.mongodb.net/"
+CONNECTION_STRING = "mongodb+srv://lab12:losrocotos@cluster0.twg1dw1.mongodb.net/"
 DB_NAME = "data_casinos"
 
 def get_db():
@@ -13,4 +13,3 @@ def get_db():
     except Exception as e:
         print(f"❌ Error de conexión: {e}")
         return None
-    
