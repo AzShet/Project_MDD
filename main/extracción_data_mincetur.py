@@ -1,3 +1,4 @@
+from src.database.mongo_conection import get_db 
 from webdriver_manager.chrome import ChromeDriverManager
 # Importa el controlador principal de Selenium para controlar el navegador (Chrome, Firefox, etc.)
 from selenium import webdriver
@@ -88,3 +89,14 @@ df.to_csv("datos_casinos_salas.csv", index=False, encoding='utf-8-sig')
 print(f"\n✅ Total de filas extraídas: {len(df)}")
 
 print(df)
+
+db = get_db()
+
+if db:
+    collection = db["load_casinos"]
+    documentos = df.to_dict(orient="records")
+    if documentos:
+        collection.insert_many(documentos)
+        print(f"✅ {len(documentos)} documentos insertados en 'load_casinos'")
+    else:
+        print("⚠️ No hay datos para insertar")
