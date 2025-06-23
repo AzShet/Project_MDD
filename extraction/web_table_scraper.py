@@ -20,14 +20,14 @@ def scrape_and_load_web_tables():
     # --- 1. Lectura de Configuración ---
     config = configparser.ConfigParser()
     config.read('configs/settings.ini')
-    
+
     url_web = config['SCRAPING']['CASINOS_URL']
     output_path = config['DATA_OUTPUT']['PROCESSED_PATH']
     collection_name = config['MONGO']['COLLECTION_LOAD']
 
     # Asegurarse de que el directorio de salida exista
     os.makedirs(output_path, exist_ok=True)
-    
+
     # --- 2. Configuración de Selenium ---
     print("🚀 Iniciando el proceso de scraping...")
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
@@ -38,20 +38,20 @@ def scrape_and_load_web_tables():
         WebDriverWait(driver, 60).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "#divResultadoSala table[cellspacing='0']"))
         )
-        
+
         # --- 3. Extracción de Datos por Paginación ---
         todos_los_datos = []
         pagina = 1
 
         while True:
             print(f"📄 Extrayendo datos de la página {pagina}...")
-            
+
             try:
                 # Esperar a que la tabla de la página actual esté presente
                 tabla = WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "#divResultadoSala table[cellspacing='0']"))
                 )
-                
+
                 filas = tabla.find_elements(By.XPATH, ".//tr[@data-id]")
                 for fila in filas:
                     celdas = fila.find_elements(By.TAG_NAME, "td")
@@ -89,7 +89,7 @@ def scrape_and_load_web_tables():
         "Código Sala", "Vigencia", "Dirección", "Distrito", "Provincia", "Departamento"
     ]
     df = pd.DataFrame(todos_los_datos, columns=columnas)
-    
+
     # Guardar los datos en archivos locales (CSV y Excel)
     df.to_csv(os.path.join(output_path, "datos_casinos_salas.csv"), index=False, encoding='utf-8-sig')
     df.to_excel(os.path.join(output_path, "datos_casinos_salas.xlsx"), sheet_name="Data", index=False)
@@ -100,17 +100,19 @@ def scrape_and_load_web_tables():
 
     # --- 6. Carga a MongoDB ---
     db = get_db()
-    if db:
+    if db is not None: # <--- CAMBIO AQUÍ: Comparar explícitamente con None
         collection = db[collection_name]
         documentos = df.to_dict(orient="records")
-        
+
         if documentos:
             # Para evitar duplicados, es una buena práctica borrar los datos antiguos antes de una nueva carga
             print(f"Borrando datos antiguos de la colección '{collection_name}'...")
             collection.delete_many({})
-            
+
             print(f"Cargando {len(documentos)} nuevos documentos...")
             collection.insert_many(documentos)
             print(f"✅ {len(documentos)} documentos insertados exitosamente en '{collection_name}'")
         else:
             print("⚠️ No hay datos para insertar en la base de datos.")
+    else: # <-- Opcional: añadir un mensaje si la conexión a la DB falla en este punto
+        print("❌ La conexión a MongoDB no se pudo establecer. No se cargarán datos.")
