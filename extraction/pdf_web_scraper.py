@@ -11,9 +11,62 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import time
+import glob
 
-# Importamos nuestra función de conexión a DB
 from database.db_connections import get_db
+
+def wait_for_download_completion(download_dir, expected_file_name, timeout=60, check_interval=1, stable_checks=3):
+    start_time = time.time()
+    downloaded_file_path = None
+    full_expected_path = os.path.join(download_dir, expected_file_name)
+    temp_crdownload_path = full_expected_path + '.crdownload'
+    
+    file_sizes = {} 
+
+    print(f"         ⏳ Esperando que '{expected_file_name}' se descargue en '{download_dir}'...")
+
+    while time.time() - start_time < timeout:
+        
+        # 1. Verificar si el archivo final esperado ya existe y su tamaño es estable
+        if os.path.exists(full_expected_path):
+            try:
+                current_size = os.path.getsize(full_expected_path)
+                
+                if full_expected_path in file_sizes and file_sizes[full_expected_path]['last_size'] == current_size:
+                    file_sizes[full_expected_path]['stable_count'] += 1
+                else:
+                    file_sizes[full_expected_path] = {'last_size': current_size, 'stable_count': 0}
+                
+                if file_sizes[full_expected_path]['stable_count'] >= stable_checks:
+                    downloaded_file_path = full_expected_path
+                    print(f"         ✨ Descarga completada y estable: {expected_file_name} ({current_size} bytes)")
+                    return downloaded_file_path
+            except OSError:
+                pass
+        
+        # 2. Verificar si el archivo .crdownload desapareció (indicando que la descarga finalizó)
+        if os.path.exists(temp_crdownload_path):
+            pass
+        elif not os.path.exists(temp_crdownload_path) and os.path.exists(full_expected_path):
+            try:
+                current_size = os.path.getsize(full_expected_path)
+                if full_expected_path in file_sizes and file_sizes[full_expected_path]['last_size'] == current_size:
+                    file_sizes[full_expected_path]['stable_count'] += 1
+                else:
+                    file_sizes[full_expected_path] = {'last_size': current_size, 'stable_count': 0}
+                
+                if file_sizes[full_expected_path]['stable_count'] >= 1: 
+                    downloaded_file_path = full_expected_path
+                    print(f"         ✨ .crdownload desapareció y archivo final estable: {expected_file_name} ({current_size} bytes)")
+                    return downloaded_file_path
+            except OSError:
+                pass 
+            
+        time.sleep(check_interval) 
+
+    print(f"         ⚠️ Tiempo de espera agotado ({timeout}s) para la descarga de '{expected_file_name}'.")
+    return None
+
 
 def scrape_resoluciones_from_df():
     config = configparser.ConfigParser()
@@ -34,10 +87,14 @@ def scrape_resoluciones_from_df():
     print("==  INICIO DEL PROCESO DE SCRAPING DE RESOLUCIONES  ==")
     print("=" * 49)
 
+    print(f"Configuración de rutas:")
+    print(f"  Ruta de salida (Excel): {os.path.abspath(output_path)}")
+    print(f"  Ruta de descarga (PDFs): {os.path.abspath(download_dir)}")
+    print("-" * 49)
+
     db = get_db()
     if db is None:
         print("❌ No se pudo conectar a MongoDB.")
-        # MODIFICACIÓN: Añadir 'PDF-Path' a las columnas iniciales
         pd.DataFrame(columns=['Resolución', 'Anio', 'PDF-name', 'PDF-Path', 'Código Sala']).to_excel(output_excel_path, index=False)
         return
 
@@ -46,7 +103,6 @@ def scrape_resoluciones_from_df():
 
     if resoluciones_df.empty:
         print("⚠️ No se encontraron resoluciones.")
-        # MODIFICACIÓN: Añadir 'PDF-Path' a las columnas iniciales
         pd.DataFrame(columns=['Resolución', 'Anio', 'PDF-name', 'PDF-Path', 'Código Sala']).to_excel(output_excel_path, index=False)
         return
 
@@ -67,15 +123,19 @@ def scrape_resoluciones_from_df():
 
     resoluciones_df = temp_df
     resoluciones_df['PDF-name'] = "NO DATA"
-    resoluciones_df['PDF-Path'] = "NO DATA" # MODIFICACIÓN: Inicializar nueva columna
+    resoluciones_df['PDF-Path'] = "NO DATA"
 
     print(resoluciones_df.head())
-    print(f"✅ Preprocesamiento completado. Total de {len(resoluciones_df)} filas.")
-
-    # Limitar a 5 filas para prueba (descomenta para pruebas, comenta para producción)
-    # resoluciones_df_to_process = resoluciones_df.head(5).copy()
+    
+    # Limitar el procesamiento a un número específico de filas para prueba:
+    # Descomenta la siguiente línea y ajusta el número (ej. .head(20))
     resoluciones_df_to_process = resoluciones_df.copy()
     
+    # Comenta la siguiente línea cuando quieras procesar todos los registros
+    # resoluciones_df_to_process = resoluciones_df.copy()
+    
+    print(f"✅ Preprocesamiento completado. Total de {len(resoluciones_df_to_process)} filas.")
+
     print("🌐 Iniciando navegador...")
     driver = None
     try:
@@ -87,14 +147,17 @@ def scrape_resoluciones_from_df():
         }
         chrome_options.add_experimental_option("prefs", prefs)
 
-        # chrome_options.add_argument("--headless")
+        # chrome_options.add_argument("--headless") # Comenta esta línea para ver el navegador
         # chrome_options.add_argument("--start-maximized")
-        # chrome_options.add_experimental_option("detach", True)
+        # chrome_options.add_experimental_option("detach", True) 
 
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         driver.get(resoluciones_url)
 
-        RESULT_TABLE_XPATH = '//*[@id="form1"]/table/tbody/tr[3]/td/table'
+        # XPATH más general para la tabla de resultados. 
+        # Busca cualquier tabla que esté dentro de un td con class="trans_td"
+        # Esto es más robusto si la posición de tr[3] cambia.
+        RESULT_TABLE_XPATH = '//td[@class="trans_td"]/table/tbody' 
 
         def initialize_page_elements(driver_instance):
             print("⚙️ Inicializando elementos...")
@@ -129,7 +192,7 @@ def scrape_resoluciones_from_df():
             original_mongo_index = row['Original_Index']
             print(f"\nProcesando {index+1}/{len(resoluciones_df_to_process)}: RD '{rd_value}'")
             found_pdf_names = []
-            downloaded_paths_for_rd = [] # MODIFICACIÓN: Lista para almacenar las rutas completas
+            downloaded_paths_for_rd = []
 
             try:
                 # Re-localizar input_field y search_button en cada iteración
@@ -145,17 +208,29 @@ def scrape_resoluciones_from_df():
                 print("   🔍 Botón 'Buscar' presionado.")
 
                 try:
-                    WebDriverWait(driver, 10).until(
+                    # Esperar la visibilidad de la tabla de resultados. 
+                    # Aumentado el tiempo de espera por si la página es lenta.
+                    WebDriverWait(driver, 20).until( 
                         EC.visibility_of_element_located((By.XPATH, RESULT_TABLE_XPATH)))
                     
-                    WebDriverWait(driver, 5).until(
-                        EC.presence_of_all_elements_located((By.XPATH, f'{RESULT_TABLE_XPATH}//a[@class="Links" and contains(@href, ".pdf")]')))
+                    # Nuevo XPATH para los enlaces PDF: busca cualquier <a> con class="Links" 
+                    # y que su href contenga 'Imagen.aspx'.
+                    # Esto es más preciso según tus capturas de pantalla.
+                    pdf_link_xpath = f'{RESULT_TABLE_XPATH}//a[@class="Links" and contains(@href, "Imagen.aspx")]'
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_all_elements_located((By.XPATH, pdf_link_xpath)))
                     print("   ✅ Resultados y enlaces PDF detectados dentro de la tabla.")
                 except Exception as e_wait_results:
                     print(f"   ⚠️ No se detectaron resultados o enlaces PDF para '{rd_value}' (Error: {e_wait_results}).")
-                    
-                pdf_link_elements = driver.find_elements(By.XPATH, f'{RESULT_TABLE_XPATH}//a[@class="Links" and contains(@href, ".pdf")]')
+                    # Si no se encontraron elementos en el WebDriverWait, no hay necesidad de buscar de nuevo
+                    # con driver.find_elements, ya que no estarán presentes.
+                    pdf_link_elements = [] # Asegura que la lista esté vacía para no intentar iterar
                 
+                # Si el WebDriverWait tuvo éxito, entonces busca los elementos.
+                # Si falló, pdf_link_elements ya estará vacío.
+                if 'pdf_link_elements' not in locals() or not pdf_link_elements:
+                    pdf_link_elements = driver.find_elements(By.XPATH, pdf_link_xpath)
+
                 if pdf_link_elements:
                     for link_element in pdf_link_elements:
                         pdf_name_from_text = link_element.text.strip()
@@ -165,42 +240,47 @@ def scrape_resoluciones_from_df():
                             print(f"      ➡️ Encontrado texto de enlace: '{pdf_name_from_text}' con URL: '{pdf_url}'")
                             found_pdf_names.append(pdf_name_from_text)
 
-                            safe_file_name = "".join([c for c in pdf_name_from_text if c.isalnum() or c in (' ', '.', '_', '-')]).rstrip()
+                            # Modificación para un nombre de archivo más robusto basado en el texto del enlace
+                            # Asegura que el nombre sea seguro para el sistema de archivos
+                            base_name = pdf_name_from_text.replace('RD Nº ', '').replace(' - MINCETUR/DGJCMT', '').strip()
+                            safe_file_name = "".join([c for c in base_name if c.isalnum() or c in (' ', '.', '_', '-')]).replace(' ', '_').rstrip()
                             if not safe_file_name.lower().endswith('.pdf'):
                                 safe_file_name += '.pdf'
                             
-                            pdf_path = os.path.join(download_dir, safe_file_name) # La ruta completa del archivo
+                            expected_pdf_path = os.path.join(download_dir, safe_file_name)
 
                             print(f"      ⬇️ Intentando descargar: {safe_file_name}")
-
+                            
+                            downloaded_file = None
                             try:
                                 link_element.click()
-                                time.sleep(3)
+                                downloaded_file = wait_for_download_completion(download_dir, safe_file_name, timeout=60) 
 
-                                downloaded_files = os.listdir(download_dir)
-                                if safe_file_name in downloaded_files:
-                                    print(f"         ✅ Descargado: {safe_file_name}")
-                                    downloaded_paths_for_rd.append(pdf_path) # MODIFICACIÓN: Añadir la ruta completa
-                                else:
-                                    print(f"         ❌ No se confirmó la descarga automática de: {safe_file_name}. Intentando con requests.")
+                                if not downloaded_file:
+                                    print(f"         ❌ No se confirmó la descarga automática de: {safe_file_name} vía Selenium dentro del tiempo. Intentando con requests.")
                                     response = requests.get(pdf_url, stream=True, verify=False)
                                     response.raise_for_status()
 
-                                    with open(pdf_path, 'wb') as f:
+                                    with open(expected_pdf_path, 'wb') as f:
                                         for chunk in response.iter_content(chunk_size=8192):
                                             f.write(chunk)
                                     print(f"         ✅ Descargado (vía requests): {safe_file_name}")
-                                    downloaded_paths_for_rd.append(pdf_path) # MODIFICACIÓN: Añadir la ruta completa
-
+                                    downloaded_file = expected_pdf_path 
 
                             except Exception as download_e:
-                                print(f"         ❌ Error al descargar '{safe_file_name}' de '{pdf_url}': {download_e}")
+                                print(f"         ❌ Error al intentar descarga con Selenium/Requests '{safe_file_name}' de '{pdf_url}': {download_e}")
+                                downloaded_file = None 
+                            
+                            if downloaded_file:
+                                downloaded_paths_for_rd.append(downloaded_file)
+                            else:
+                                print(f"         ⚠️ Descarga FALLIDA para {safe_file_name}. No se añadirá ruta.")
+
 
                     if found_pdf_names:
                         resoluciones_df.loc[original_mongo_index, 'PDF-name'] = " - ".join(found_pdf_names)
                         print(f"   ✅ 'PDF-name' actualizado para '{rd_value}': '{resoluciones_df.loc[original_mongo_index, 'PDF-name']}'")
                     
-                    # MODIFICACIÓN: Actualizar la columna 'PDF-Path'
                     if downloaded_paths_for_rd:
                         resoluciones_df.loc[original_mongo_index, 'PDF-Path'] = " - ".join(downloaded_paths_for_rd)
                         print(f"   📂 Rutas PDF descargadas para '{rd_value}': {', '.join(downloaded_paths_for_rd)}")
@@ -250,7 +330,27 @@ def scrape_resoluciones_from_df():
     try:
         if 'Original_Index' in resoluciones_df.columns:
             resoluciones_df.drop(columns=['Original_Index'], inplace=True)
-        resoluciones_df.to_excel(output_excel_path, sheet_name="Data", index=False)
+        
+        try:
+            final_df = pd.read_excel(output_excel_path)
+        except FileNotFoundError:
+            final_df = pd.DataFrame(columns=['Resolución', 'Anio', 'PDF-name', 'PDF-Path', 'Código Sala'])
+
+        for col in ['PDF-name', 'PDF-Path']:
+            if col not in final_df.columns:
+                final_df[col] = "NO DATA"
+        
+        # Iterar sobre las filas procesadas y actualizar el final_df basado en la columna 'Resolución'
+        for index, row in resoluciones_df.iterrows():
+            res_val = row['Resolución']
+            # Buscar la fila correspondiente en final_df
+            match_index = final_df[final_df['Resolución'] == res_val].index
+            if not match_index.empty:
+                # Actualizar las columnas 'PDF-name' y 'PDF-Path'
+                final_df.loc[match_index, 'PDF-name'] = row['PDF-name']
+                final_df.loc[match_index, 'PDF-Path'] = row['PDF-Path']
+        
+        final_df.to_excel(output_excel_path, sheet_name="Data", index=False)
         print(f"\n✅ DataFrame FINAL exportado con éxito a: {output_excel_path}")
     except PermissionError as e:
         print(f"❌ Error de Permiso al exportar el DataFrame a Excel: {e}")
