@@ -16,8 +16,8 @@ import zipfile # Para manejar archivos ZIP
 import shutil # Para copiar archivos dentro de la descompresión
 import re # Para expresiones regulares en nombres de archivo
 from urllib.parse import unquote # Para decodificar nombres de archivo de URLs
-
-# Importamos nuestra función de conexión a DB
+# casi
+# Importamos nuestra función de conexión a DB 
 from database.db_connections import get_db
 
 def unzip_pdfs(zip_path, extract_to_dir):
