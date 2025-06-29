@@ -12,59 +12,106 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import glob
-## casi
+import zipfile # Para manejar archivos ZIP
+import shutil # Para copiar archivos dentro de la descompresión
+import re # Para expresiones regulares en nombres de archivo
+from urllib.parse import unquote # Para decodificar nombres de archivo de URLs
+
+# Importamos nuestra función de conexión a DB
 from database.db_connections import get_db
 
-def wait_for_download_completion(download_dir, expected_file_name, timeout=60, check_interval=1, stable_checks=3):
+def unzip_pdfs(zip_path, extract_to_dir):
+    """
+    Descomprime un archivo ZIP y busca archivos PDF dentro.
+    Retorna una lista de rutas absolutas de los PDFs extraídos.
+    """
+    extracted_pdf_paths = []
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_contents = zip_ref.namelist()
+            print(f"         📦 Contenido del ZIP '{os.path.basename(zip_path)}': {zip_contents}")
+
+            for member in zip_contents:
+                if member.lower().endswith('.pdf'):
+                    extracted_pdf_name = os.path.basename(member) 
+                    extracted_pdf_path = os.path.join(extract_to_dir, extracted_pdf_name)
+                    
+                    # Evitar nombres de archivo duplicados al extraer
+                    counter = 1
+                    original_extracted_pdf_path = extracted_pdf_path
+                    while os.path.exists(extracted_pdf_path):
+                        name, ext = os.path.splitext(original_extracted_pdf_path)
+                        extracted_pdf_path = f"{name}_{counter}{ext}"
+                        counter += 1
+
+                    print(f"         📄 Extrayendo PDF: '{member}' a '{os.path.basename(extracted_pdf_path)}'")
+                    
+                    source = zip_ref.open(member)
+                    target = open(extracted_pdf_path, "wb")
+                    with source, target:
+                        shutil.copyfileobj(source, target)
+
+                    extracted_pdf_paths.append(extracted_pdf_path)
+                else:
+                    print(f"         ➖ Ignorando archivo no-PDF en ZIP: '{member}'")
+        
+        # Opcional: Eliminar el archivo ZIP después de la extracción
+        print(f"         🗑️ Eliminando archivo ZIP: '{os.path.basename(zip_path)}'")
+        os.remove(zip_path)
+
+    except zipfile.BadZipFile:
+        print(f"         ❌ Error: El archivo '{os.path.basename(zip_path)}' no es un archivo ZIP válido.")
+    except Exception as e:
+        print(f"         ❌ Error al descomprimir ZIP '{os.path.basename(zip_path)}': {e}")
+    
+    return extracted_pdf_paths
+
+def wait_for_download_completion(download_dir, timeout=60, check_interval=1, stable_checks=3):
+    """
+    Espera a que un archivo se descargue en el directorio dado,
+    que no sea un archivo .crdownload, y que su tamaño se estabilice.
+    Retorna la ruta completa del archivo descargado o None si hay timeout.
+    No requiere un nombre de archivo específico inicialmente, busca el primero nuevo y estable.
+    """
     start_time = time.time()
     downloaded_file_path = None
-    full_expected_path = os.path.join(download_dir, expected_file_name)
-    temp_crdownload_path = full_expected_path + '.crdownload'
     
-    file_sizes = {} 
+    # Obtener la lista de archivos existentes antes de la descarga
+    initial_files = set(os.listdir(download_dir))
+    
+    file_sizes = {} # Para rastrear el tamaño del archivo y detectar estabilidad
 
-    print(f"         ⏳ Esperando que '{expected_file_name}' se descargue en '{download_dir}'...")
+    print(f"         ⏳ Esperando que un archivo se descargue en '{download_dir}'...")
 
     while time.time() - start_time < timeout:
-        
-        # 1. Verificar si el archivo final esperado ya existe y su tamaño es estable
-        if os.path.exists(full_expected_path):
+        current_files = set(os.listdir(download_dir))
+        new_files = current_files - initial_files
+
+        for file_name in new_files:
+            full_path = os.path.join(download_dir, file_name)
+            
+            # Ignorar archivos temporales de descarga (.crdownload, .tmp, etc.)
+            if file_name.lower().endswith(('.crdownload', '.tmp', '.part')):
+                continue
+
             try:
-                current_size = os.path.getsize(full_expected_path)
+                current_size = os.path.getsize(full_path)
                 
-                if full_expected_path in file_sizes and file_sizes[full_expected_path]['last_size'] == current_size:
-                    file_sizes[full_expected_path]['stable_count'] += 1
+                if full_path in file_sizes and file_sizes[full_path]['last_size'] == current_size:
+                    file_sizes[full_path]['stable_count'] += 1
                 else:
-                    file_sizes[full_expected_path] = {'last_size': current_size, 'stable_count': 0}
+                    file_sizes[full_path] = {'last_size': current_size, 'stable_count': 0}
                 
-                if file_sizes[full_expected_path]['stable_count'] >= stable_checks:
-                    downloaded_file_path = full_expected_path
-                    print(f"         ✨ Descarga completada y estable: {expected_file_name} ({current_size} bytes)")
-                    return downloaded_file_path
+                if file_sizes[full_path]['stable_count'] >= stable_checks:
+                    print(f"         ✨ Descarga completada y estable: {file_name} ({current_size} bytes)")
+                    return full_path # Retorna la ruta del archivo descargado
             except OSError:
+                # El archivo puede estar siendo escrito, inaccesible temporalmente
                 pass
         
-        # 2. Verificar si el archivo .crdownload desapareció (indicando que la descarga finalizó)
-        if os.path.exists(temp_crdownload_path):
-            pass
-        elif not os.path.exists(temp_crdownload_path) and os.path.exists(full_expected_path):
-            try:
-                current_size = os.path.getsize(full_expected_path)
-                if full_expected_path in file_sizes and file_sizes[full_expected_path]['last_size'] == current_size:
-                    file_sizes[full_expected_path]['stable_count'] += 1
-                else:
-                    file_sizes[full_expected_path] = {'last_size': current_size, 'stable_count': 0}
-                
-                if file_sizes[full_expected_path]['stable_count'] >= 1: 
-                    downloaded_file_path = full_expected_path
-                    print(f"         ✨ .crdownload desapareció y archivo final estable: {expected_file_name} ({current_size} bytes)")
-                    return downloaded_file_path
-            except OSError:
-                pass 
-            
-        time.sleep(check_interval) 
+        time.sleep(check_interval)
 
-    print(f"         ⚠️ Tiempo de espera agotado ({timeout}s) para la descarga de '{expected_file_name}'.")
+    print(f"         ⚠️ Tiempo de espera agotado ({timeout}s) para la descarga de un archivo.")
     return None
 
 
@@ -91,6 +138,7 @@ def scrape_resoluciones_from_df():
     print(f"  Ruta de salida (Excel): {os.path.abspath(output_path)}")
     print(f"  Ruta de descarga (PDFs): {os.path.abspath(download_dir)}")
     print("-" * 49)
+
 
     db = get_db()
     if db is None:
@@ -127,12 +175,13 @@ def scrape_resoluciones_from_df():
 
     print(resoluciones_df.head())
     
-    # Limitar el procesamiento a un número específico de filas para prueba:
-    # Descomenta la siguiente línea y ajusta el número (ej. .head(20))
-    resoluciones_df_to_process = resoluciones_df.copy()
+    # === Procesar TODOS los registros ===
+    # Comentar la línea para limitar los registros de prueba
+    # resoluciones_df_to_process = resoluciones_df.head(20).copy() 
     
-    # Comenta la siguiente línea cuando quieras procesar todos los registros
-    # resoluciones_df_to_process = resoluciones_df.copy()
+    # Descomentar la línea para procesar TODOS los registros
+    resoluciones_df_to_process = resoluciones_df.copy()
+    # ====================================
     
     print(f"✅ Preprocesamiento completado. Total de {len(resoluciones_df_to_process)} filas.")
 
@@ -147,7 +196,8 @@ def scrape_resoluciones_from_df():
         }
         chrome_options.add_experimental_option("prefs", prefs)
 
-        # chrome_options.add_argument("--headless") # Comenta esta línea para ver el navegador
+        # Puedes descomentar la siguiente línea para ejecutar el navegador en segundo plano (sin interfaz gráfica)
+        # chrome_options.add_argument("--headless") 
         # chrome_options.add_argument("--start-maximized")
         # chrome_options.add_experimental_option("detach", True) 
 
@@ -155,8 +205,6 @@ def scrape_resoluciones_from_df():
         driver.get(resoluciones_url)
 
         # XPATH más general para la tabla de resultados. 
-        # Busca cualquier tabla que esté dentro de un td con class="trans_td"
-        # Esto es más robusto si la posición de tr[3] cambia.
         RESULT_TABLE_XPATH = '//td[@class="trans_td"]/table/tbody' 
 
         def initialize_page_elements(driver_instance):
@@ -209,27 +257,22 @@ def scrape_resoluciones_from_df():
 
                 try:
                     # Esperar la visibilidad de la tabla de resultados. 
-                    # Aumentado el tiempo de espera por si la página es lenta.
                     WebDriverWait(driver, 20).until( 
                         EC.visibility_of_element_located((By.XPATH, RESULT_TABLE_XPATH)))
                     
-                    # Nuevo XPATH para los enlaces PDF: busca cualquier <a> con class="Links" 
+                    # Nuevo XPATH para los enlaces: busca cualquier <a> con class="Links" 
                     # y que su href contenga 'Imagen.aspx'.
-                    # Esto es más preciso según tus capturas de pantalla.
                     pdf_link_xpath = f'{RESULT_TABLE_XPATH}//a[@class="Links" and contains(@href, "Imagen.aspx")]'
                     WebDriverWait(driver, 10).until(
                         EC.presence_of_all_elements_located((By.XPATH, pdf_link_xpath)))
                     print("   ✅ Resultados y enlaces PDF detectados dentro de la tabla.")
                 except Exception as e_wait_results:
-                    print(f"   ⚠️ No se detectaron resultados o enlaces PDF para '{rd_value}' (Error: {e_wait_results}).")
-                    # Si no se encontraron elementos en el WebDriverWait, no hay necesidad de buscar de nuevo
-                    # con driver.find_elements, ya que no estarán presentes.
-                    pdf_link_elements = [] # Asegura que la lista esté vacía para no intentar iterar
+                    print(f"   ⚠️ No se detectaron resultados o enlaces (PDF/ZIP) para '{rd_value}' (Error: {e_wait_results}).")
+                    pdf_link_elements = [] 
                 
-                # Si el WebDriverWait tuvo éxito, entonces busca los elementos.
-                # Si falló, pdf_link_elements ya estará vacío.
                 if 'pdf_link_elements' not in locals() or not pdf_link_elements:
                     pdf_link_elements = driver.find_elements(By.XPATH, pdf_link_xpath)
+
 
                 if pdf_link_elements:
                     for link_element in pdf_link_elements:
@@ -240,41 +283,81 @@ def scrape_resoluciones_from_df():
                             print(f"      ➡️ Encontrado texto de enlace: '{pdf_name_from_text}' con URL: '{pdf_url}'")
                             found_pdf_names.append(pdf_name_from_text)
 
-                            # Modificación para un nombre de archivo más robusto basado en el texto del enlace
-                            # Asegura que el nombre sea seguro para el sistema de archivos
-                            base_name = pdf_name_from_text.replace('RD Nº ', '').replace(' - MINCETUR/DGJCMT', '').strip()
-                            safe_file_name = "".join([c for c in base_name if c.isalnum() or c in (' ', '.', '_', '-')]).replace(' ', '_').rstrip()
-                            if not safe_file_name.lower().endswith('.pdf'):
-                                safe_file_name += '.pdf'
+                            # Extraer un nombre base seguro del texto del enlace
+                            base_name_from_text = pdf_name_from_text.replace('RD Nº ', '').replace(' - MINCETUR/DGJCMT', '').strip()
+                            safe_base_name = "".join([c for c in base_name_from_text if c.isalnum() or c in (' ', '.', '_', '-')]).replace(' ', '_').rstrip('_')
                             
-                            expected_pdf_path = os.path.join(download_dir, safe_file_name)
-
-                            print(f"      ⬇️ Intentando descargar: {safe_file_name}")
+                            print(f"      ⬇️ Intentando descargar el archivo asociado a: {pdf_name_from_text}")
                             
                             downloaded_file = None
                             try:
+                                # Haz clic en el enlace para iniciar la descarga por el navegador
                                 link_element.click()
-                                downloaded_file = wait_for_download_completion(download_dir, safe_file_name, timeout=60) 
-
+                                
+                                # Monitorea el directorio de descarga en general
+                                downloaded_file = wait_for_download_completion(download_dir, timeout=60) 
+                                
                                 if not downloaded_file:
-                                    print(f"         ❌ No se confirmó la descarga automática de: {safe_file_name} vía Selenium dentro del tiempo. Intentando con requests.")
+                                    print(f"         ❌ No se confirmó la descarga automática de un archivo vía Selenium dentro del tiempo. Intentando con requests.")
                                     response = requests.get(pdf_url, stream=True, verify=False)
                                     response.raise_for_status()
+                                    
+                                    # Determinar el nombre del archivo desde la cabecera Content-Disposition si es posible
+                                    download_filename = None
+                                    content_disposition = response.headers.get('Content-Disposition')
+                                    if content_disposition:
+                                        fname_match = re.findall(r'filename\*?=(?:UTF-8\'\')?\"?([^\"]+)\"?', content_disposition)
+                                        if fname_match:
+                                            try:
+                                                download_filename = unquote(fname_match[0], encoding='utf-8')
+                                            except:
+                                                download_filename = unquote(fname_match[0])
+                                    
+                                    # Si no se obtuvo de Content-Disposition, intentar del URL o usar el nombre base
+                                    if not download_filename:
+                                        url_filename = os.path.basename(pdf_url.split('?')[0])
+                                        if '.' in url_filename and len(url_filename.split('.')[-1]) <= 5: # Intenta obtener extensión si parece un nombre de archivo
+                                            download_filename = url_filename
+                                        else:
+                                            # Fallback a un nombre usando el safe_base_name y una extensión por defecto
+                                            download_filename = f"{safe_base_name}.pdf" # Asumimos .pdf como último recurso
+                                    
+                                    # Asegurarse de que el nombre de archivo sea seguro y no demasiado largo
+                                    download_filename = "".join([c for c in download_filename if c.isalnum() or c in (' ', '.', '_', '-')]).replace(' ', '_').rstrip('_')
 
-                                    with open(expected_pdf_path, 'wb') as f:
+                                    # Si el nombre de archivo no tiene extensión, añadir una por defecto
+                                    if not '.' in download_filename:
+                                        download_filename += '.pdf'
+
+
+                                    downloaded_file = os.path.join(download_dir, download_filename)
+
+                                    with open(downloaded_file, 'wb') as f:
                                         for chunk in response.iter_content(chunk_size=8192):
                                             f.write(chunk)
-                                    print(f"         ✅ Descargado (vía requests): {safe_file_name}")
-                                    downloaded_file = expected_pdf_path 
+                                    print(f"         ✅ Descargado (vía requests): {download_filename}")
 
                             except Exception as download_e:
-                                print(f"         ❌ Error al intentar descarga con Selenium/Requests '{safe_file_name}' de '{pdf_url}': {download_e}")
+                                print(f"         ❌ Error al intentar descarga con Selenium/Requests para el enlace '{pdf_name_from_text}' de '{pdf_url}': {download_e}")
                                 downloaded_file = None 
                             
-                            if downloaded_file:
-                                downloaded_paths_for_rd.append(downloaded_file)
+                            if downloaded_file and os.path.exists(downloaded_file): # Asegurarse de que el archivo realmente existe
+                                # AHORA, verificamos si el archivo descargado es un ZIP
+                                if downloaded_file.lower().endswith('.zip'):
+                                    print(f"         🧩 Archivo descargado es ZIP: '{os.path.basename(downloaded_file)}'. Intentando descomprimir...")
+                                    extracted_pdfs = unzip_pdfs(downloaded_file, download_dir)
+                                    if extracted_pdfs:
+                                        downloaded_paths_for_rd.extend(extracted_pdfs)
+                                    else:
+                                        print(f"         ⚠️ No se encontraron PDFs válidos dentro del ZIP o falló la descompresión. Se mantendrá el ZIP si no se eliminó.")
+                                        # Si el ZIP no contenía PDFs o falló, puedes optar por guardar la ruta del ZIP si es relevante,
+                                        # o registrar que no hubo PDFs. Por ahora, si no hay PDFs extraídos, no se añade ruta.
+                                else:
+                                    # Si es un PDF directo o cualquier otro archivo que queremos guardar tal cual
+                                    downloaded_paths_for_rd.append(downloaded_file)
+                                    print(f"         ✅ Archivo descargado directamente: '{os.path.basename(downloaded_file)}'")
                             else:
-                                print(f"         ⚠️ Descarga FALLIDA para {safe_file_name}. No se añadirá ruta.")
+                                print(f"         ⚠️ Descarga FALLIDA o archivo no encontrado después de intento para el enlace de '{pdf_name_from_text}'. No se añadirá ruta.")
 
 
                     if found_pdf_names:
@@ -282,15 +365,16 @@ def scrape_resoluciones_from_df():
                         print(f"   ✅ 'PDF-name' actualizado para '{rd_value}': '{resoluciones_df.loc[original_mongo_index, 'PDF-name']}'")
                     
                     if downloaded_paths_for_rd:
+                        # Unir las rutas de PDFs (pueden ser múltiples del ZIP)
                         resoluciones_df.loc[original_mongo_index, 'PDF-Path'] = " - ".join(downloaded_paths_for_rd)
                         print(f"   📂 Rutas PDF descargadas para '{rd_value}': {', '.join(downloaded_paths_for_rd)}")
                     else:
                         resoluciones_df.loc[original_mongo_index, 'PDF-Path'] = "NO DATA"
-                        print(f"   ⚠️ No se pudieron descargar PDFs para '{rd_value}'. 'PDF-Path' se mantiene como 'NO DATA'.")
+                        print(f"   ⚠️ No se pudieron descargar PDFs (o extraer de ZIP) para '{rd_value}'. 'PDF-Path' se mantiene como 'NO DATA'.")
 
                 else:
-                    print("      No se encontraron enlaces PDF para esta RD en la tabla.")
-                    print(f"   ⚠️ No se encontraron resultados o enlaces PDF para '{rd_value}'. 'PDF-name' y 'PDF-Path' se mantienen como 'NO DATA'.")
+                    print("      No se encontraron enlaces PDF/ZIP para esta RD en la tabla.")
+                    print(f"   ⚠️ No se encontraron resultados o enlaces (PDF/ZIP) para '{rd_value}'. 'PDF-name' y 'PDF-Path' se mantienen como 'NO DATA'.")
 
 
                 current_state_df = resoluciones_df.copy()
@@ -304,6 +388,7 @@ def scrape_resoluciones_from_df():
                 print(f"   ⚠️ Error crítico para RD '{rd_value}'. Intentando recargar y continuar.")
                 try:
                     driver.get(resoluciones_url)
+                    # Re-inicializar selectores después de recargar la página
                     dispositivo_selector = Select(WebDriverWait(driver, 15).until(
                         EC.element_to_be_clickable((By.XPATH, '//*[@id="UC_TIP_DISP_OBJ_DDL_COD_DISP"]'))))
                     dispositivo_selector.select_by_value("5")
@@ -340,15 +425,14 @@ def scrape_resoluciones_from_df():
             if col not in final_df.columns:
                 final_df[col] = "NO DATA"
         
-        # Iterar sobre las filas procesadas y actualizar el final_df basado en la columna 'Resolución'
         for index, row in resoluciones_df.iterrows():
             res_val = row['Resolución']
-            # Buscar la fila correspondiente en final_df
-            match_index = final_df[final_df['Resolución'] == res_val].index
-            if not match_index.empty:
-                # Actualizar las columnas 'PDF-name' y 'PDF-Path'
-                final_df.loc[match_index, 'PDF-name'] = row['PDF-name']
-                final_df.loc[match_index, 'PDF-Path'] = row['PDF-Path']
+            match_indices = final_df[final_df['Resolución'] == res_val].index
+            if not match_indices.empty:
+                final_df.loc[match_indices, 'PDF-name'] = row['PDF-name']
+                final_df.loc[match_indices, 'PDF-Path'] = row['PDF-Path']
+            else:
+                pass 
         
         final_df.to_excel(output_excel_path, sheet_name="Data", index=False)
         print(f"\n✅ DataFrame FINAL exportado con éxito a: {output_excel_path}")
