@@ -12,7 +12,7 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import glob
-
+## casi
 from database.db_connections import get_db
 
 def wait_for_download_completion(download_dir, expected_file_name, timeout=60, check_interval=1, stable_checks=3):
